@@ -1,0 +1,29 @@
+# Isharah 1000 corpus: obtained from the dataset providers, not redistributed here.
+*.pkl
+public_si_dat/
+pose_data_*
+*.csv
+
+# Model checkpoints
+*.pt
+*.pth
+checkpoints/
+
+# LaTeX build artefacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
+report/*.fls
+report/*.fdb_latexmk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
