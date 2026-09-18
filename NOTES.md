@@ -113,6 +113,8 @@ python generate_figures.py
 
 Writes PNG to `figures/` and PDF to `report/figures/`. The per-epoch numbers are transcribed from the notebook outputs rather than recomputed, so the script runs without the corpus or a GPU.
 
+**Arabic labels need shaping.** Matplotlib draws a string codepoint by codepoint, left to right, with no OpenType shaping, so Arabic comes out as disconnected letters in reverse order. The `ar()` helper reshapes and bidi-reorders each label through `arabic-reshaper` and `python-bidi` before it reaches the plot. Those two packages are optional: without them the helper returns its input unchanged and the script still runs, but every Arabic label in figures 5 and 6 will be wrong. Install them before regenerating.
+
 ---
 
 ## Building the report

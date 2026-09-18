@@ -5,3 +5,8 @@ scipy>=1.10.0
 jiwer>=3.0.0
 tqdm>=4.65.0
 matplotlib>=3.7.0
+
+# Optional: correct Arabic shaping in the generated figures.
+# generate_figures.py runs without them, but Arabic renders disconnected.
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
