@@ -1,0 +1,416 @@
+% =============================================================================
+% Pose-based Saudi Sign Language Recognition
+% A comparative study of sequence models on the Isharah 1000 dataset
+% =============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% --------- Geometry & typography ---------
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% --------- Math, graphics, tables ---------
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{xcolor}
+
+% --------- Headers / footers ---------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Pose-based Saudi Sign Language Recognition}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% --------- Hyperlinks ---------
+\usepackage[colorlinks=true,linkcolor=black,citecolor=blue,urlcolor=blue]{hyperref}
+
+% --------- Cref fallback ---------
+\newcommand{\Cref}[1]{\ref{#1}}
+\newcommand{\cref}[1]{\ref{#1}}
+
+% --------- Caption style ---------
+\captionsetup{font=small,labelfont=bf,format=plain,justification=centering}
+
+% --------- Custom commands ---------
+\newcommand{\bestwer}{\textbf{13.04\%}}
+\newcommand{\winmodel}{\textsc{Conformer\,+\,CTC}}
+
+% =============================================================================
+\begin{document}
+
+% --------- Cover page ---------
+\begin{titlepage}
+\centering
+\vspace*{1.2cm}
+{\Huge\bfseries Pose-based Saudi Sign\\[0.25em] Language Recognition\par}
+\vspace{0.6cm}
+{\large A Comparative Study of Sequence Models on the Isharah 1000 Dataset\par}
+\vspace{2.0cm}
+
+\vspace{1.0cm}
+
+\begin{tabular}{rl}
+ \textbf{Authors}    & Mohammed Al Sheqaih \\
+                     & Abdulrahman Ammar \\
+                     & Naif Alenazi \\[0.3em]
+ \textbf{Supervisor} & Dr.\ Hamzah Luqman
+\end{tabular}
+
+\vfill
+
+{\small
+\textit{Deep Learning \quad$\cdot$\quad King Fahd University of Petroleum and Minerals, Computer Science Department}\par
+}
+\end{titlepage}
+
+% --------- Visual abstract ---------
+\thispagestyle{fancy}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/01_model_comparison_hero.pdf}
+\caption{Final Dev Word Error Rate (WER) across the four architectures explored in this project. The Conformer with CTC loss (right, in green) is our final deployable model; it produces the only test-set submission in this report and achieves an 80\% relative reduction in WER over the BiLSTM baseline.}
+\end{figure}
+\newpage
+
+% --------- Table of contents ---------
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Problem Definition}
+% =============================================================================
+
+Sign Language Recognition (SLR) is the task of converting a video of a signer producing a continuous utterance into a sequence of word-level tokens called \emph{glosses}. SLR is a key building block for assistive technology that allows the Deaf and hard-of-hearing community to interact with hearing systems without an interpreter. While English and German sign languages have received considerable research attention, \textbf{Saudi Sign Language (SSL)} is severely under-resourced: most large public sign-language corpora target other languages, and the limited Arabic-language datasets available are typically small, isolated-sign collections rather than continuous sentence-level data.
+
+In this project we work with the \textbf{Isharah 1000} continuous-sentence Saudi Sign Language corpus and frame SLR as a \emph{sequence-to-sequence} problem: given a sequence of skeleton-pose frames extracted from a signed sentence, predict the corresponding Arabic gloss sequence. The chosen input representation (skeleton keypoints rather than raw RGB video) was selected for three reasons: (i) it is compact, leading to substantially smaller models that fit comfortably in Colab GPU memory; (ii) it discards appearance information such as clothing and background that is irrelevant to the linguistic content; and (iii) it generalises across signers more readily than appearance-based input.
+
+Concretely, the task is defined as follows. Each sample is a triple
+\[
+  (X^{(i)}, y^{(i)}, \mathrm{id}^{(i)}),\qquad
+  X^{(i)} \in \mathbb{R}^{T_i \times 86 \times 2},\quad
+  y^{(i)} \in V^{L_i},
+\]
+where $T_i$ is the number of pose frames, $86$ is the number of body/hand/face joints provided by the dataset, $2$ are the $(x,y)$ pixel coordinates of each joint, and $V$ is a vocabulary of Arabic gloss tokens (675 unique words plus padding/blank/SOS/EOS tokens depending on the model). A model is evaluated by the \textbf{Word Error Rate (WER)} on the Dev split:
+\[
+  \mathrm{WER}(\hat{y}, y) \;=\; \frac{S + D + I}{N},
+\]
+where $S$, $D$, $I$ are the substitutions, deletions, and insertions in the Levenshtein alignment of the predicted token sequence $\hat{y}$ against the reference $y$, and $N$ is the total number of reference tokens.
+
+Our central research question is: \emph{which encoder family --- recurrent (BiLSTM), purely attention-based (Transformer), or convolution-augmented attention (Conformer) --- best captures the long-range temporal structure of skeleton pose sequences for continuous Arabic SLR?}
+
+% =============================================================================
+\section{Dataset}
+% =============================================================================
+
+\subsection{Overview}
+The Isharah 1000 dataset \cite{isharah2024} is a continuous Saudi Sign Language corpus that pairs videos of Saudi signers performing Arabic sentences with sentence-level gloss annotations. For this project we work with the \emph{Signer-Independent (SI)} partition, which is split into training, development (dev), and held-out test subsets that contain disjoint signers. The dataset provider supplies the skeleton-pose keypoints already extracted with MediaPipe Holistic; raw video frames are not used in this work.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.55\linewidth]{figures/07_skeleton_layout.pdf}
+\caption{The 86-joint skeleton representation used as model input. Body (11 joints, blue), hands (21 joints each, green) and face/lips (33 joints, red) are concatenated and flattened into a $172$-dimensional per-frame vector. After concatenating first-order temporal differences (velocity features), the per-frame input dimension is $344$.}
+\label{fig:skeleton}
+\end{figure}
+
+\subsection{Statistics}
+\Cref{tab:dataset_stats} summarises the dataset statistics observed after we filtered out samples whose gloss IDs had no corresponding pose record (500 of the original 10{,}000 training samples). \Cref{fig:dataset} provides a visual overview.
+
+\begin{table}[H]
+\centering
+\caption{Isharah 1000 (SI split) statistics after filtering.}
+\label{tab:dataset_stats}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Property} & \textbf{Train} & \textbf{Dev} & \textbf{Test (blind)} \\
+\midrule
+Sample count                   & 9,500          & 949           & 3,800 \\
+Pose tensor shape (per sample) & $(T,86,2)$     & $(T,86,2)$    & $(T,86,2)$ \\
+Min / Mean / Max frames        & 33 / 214 / 788 & 61 / 327 / 767 & --- \\
+Min / Mean / Max gloss length  & 1 / 4.80 / 12  & 1 / 4.80 / 12  & --- \\
+Gloss vocabulary size          & \multicolumn{3}{c}{675 word tokens (+ \texttt{<pad>}, \texttt{<unk>}, \texttt{<blank>} as needed)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/08_dataset_overview.pdf}
+\caption{Isharah 1000 (SI split): sample counts per partition (left) and key sequence-level statistics (right, log scale).}
+\label{fig:dataset}
+\end{figure}
+
+\subsection{Preprocessing and Feature Extraction}
+\label{sec:preprocessing}
+All four models share the following per-sample preprocessing pipeline:
+
+\begin{enumerate}
+  \item \textbf{Body-centric translation.} For each frame we subtract the mean of the eleven body joints. This makes the representation invariant to the signer's absolute position in the camera frame.
+  \item \textbf{Per-sample scale normalisation.} We divide all coordinates by the per-sample standard deviation ($\sigma + 10^{-6}$). This removes signer-specific scale (e.g., distance from camera).
+  \item \textbf{Flattening.} The $(T,86,2)$ tensor is flattened to $(T, 172)$.
+  \item \textbf{Velocity features.} We concatenate the first-order temporal difference $\Delta f_t = f_t - f_{t-1}$ along the channel axis (zero-padded at $t=1$), producing the final per-frame feature dimension of $344$. This is a deliberate inductive bias: sign-language information lives primarily in joint \emph{motion} rather than absolute position.
+\end{enumerate}
+
+\subsection{Training-time Augmentation}
+The Conformer-based models are trained with a strong augmentation policy applied independently per sample with the following marginal probabilities:
+\begin{itemize}
+  \item \textbf{Temporal speed warp} ($p=0.5$): linearly interpolate the temporal axis with speed factor $\alpha \sim \mathcal{U}(0.8, 1.2)$.
+  \item \textbf{Spatial scaling} ($p=0.5$): multiply all coordinates by $s \sim \mathcal{U}(0.85, 1.15)$.
+  \item \textbf{2D rotation} ($p=0.5$): rotate every $(x,y)$ pair by $\theta \sim \mathcal{U}(-12^\circ, 12^\circ)$.
+  \item \textbf{Gaussian sensor noise} ($p=0.5$): add $\mathcal{N}(0,\sigma^2)$ with $\sigma \sim \mathcal{U}(0.005, 0.02)$.
+  \item \textbf{Random joint dropout} ($p=0.3$): zero out 1--5 random joints across all frames.
+  \item \textbf{Frame masking} ($p=0.5$): blank 1--10 consecutive frames over $\sim$10\% of the sequence.
+  \item \textbf{Random temporal crop} ($p=0.3$): keep a contiguous slice of ratio $\sim \mathcal{U}(0.8, 1.0)$ of the sequence.
+\end{itemize}
+The Transformer baseline uses a milder policy (time warp, rotation, scale, very-small Gaussian noise).
+
+% =============================================================================
+\section{Methodology}
+% =============================================================================
+
+\subsection{System Overview}
+We benchmark four architectures that span the three major sequence-modelling families used for continuous SLR in the recent literature \cite{koller2017, camgoz2020}:
+\begin{enumerate}
+  \item \textbf{BiLSTM + CTC} --- a recurrent baseline trained with the Connectionist Temporal Classification loss \cite{graves2006ctc}.
+  \item \textbf{Transformer + CTC} --- a pure attention encoder with CTC loss.
+  \item \textbf{Conformer + Seq2Seq Decoder} --- a Conformer encoder feeding an autoregressive Transformer decoder trained with token-level cross-entropy.
+  \item \textbf{Conformer + CTC} (our final model) --- the same Conformer encoder, but with a CTC head and the strong augmentation policy of \cref{sec:preprocessing}.
+\end{enumerate}
+
+\Cref{fig:arch} shows the end-to-end pipeline of our best model.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\linewidth]{figures/04_architecture_conformer_ctc.pdf}
+\caption{End-to-end architecture of the \winmodel{} model. The shaded labels delimit the three logical stages: (A) the input pipeline producing 344-dim feature vectors per frame; (B) the six-block Conformer encoder; and (C) the linear CTC head producing log-probabilities over $678$ output classes (677 vocabulary tokens plus the CTC blank).}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Model A --- BiLSTM + CTC (Recurrent Baseline)}
+The BiLSTM baseline is a stacked three-layer bidirectional LSTM with hidden size 256, intra-layer dropout 0.3, and a linear classifier mapping the $512$-dim bidirectional output to $678$ output classes. We use \texttt{pack\_padded\_sequence} to handle variable-length input. Training uses AdamW ($\mathrm{lr}=10^{-3}$, weight decay $10^{-4}$), a OneCycleLR schedule peaking at the same learning rate over 40 epochs, gradient clipping at $1.0$, and CTC loss with blank index 677.
+
+\subsection{Model B --- Transformer + CTC}
+The Transformer baseline projects the $172$-dim flattened pose to $d_\mathrm{model}=512$, applies BatchNorm and a sinusoidal positional encoding, and processes the sequence with $4$ standard Transformer encoder layers ($8$ attention heads, FFN width $2048$, dropout $0.1$). A final linear layer produces $682$-dim log-probabilities for CTC. Training uses AdamW ($\mathrm{lr}=10^{-4}$, weight decay $10^{-3}$), gradient clipping at $0.5$, batch size $32$, and runs for $30$ epochs without a learning-rate schedule. Decoding at evaluation time uses a beam search of width $5$.
+
+\subsection{Model C --- Conformer + Seq2Seq Decoder}
+This model couples a four-block Conformer encoder ($d_\mathrm{model}=256$, $4$ heads, convolution kernel $31$, learnable positional embeddings) to a three-layer Transformer decoder ($d_\mathrm{model}=256$, FFN width $1024$). Targets are wrapped with \texttt{<sos>} and \texttt{<eos>}; training uses teacher forcing and a label-smoothed cross-entropy loss (smoothing $0.1$) computed only over non-padding positions. The optimiser is AdamW ($\mathrm{lr}=3\times10^{-4}$, weight decay $10^{-4}$), batch size $16$, gradient clipping at $1.0$, for 30 epochs. At inference, decoding is autoregressive (greedy or beam, max length 50). This model achieves a very low Dev WER during teacher-forced training but, as we discuss in \cref{sec:errors}, becomes unstable under free-running autoregressive decoding.
+
+\subsection{Model D --- Conformer + CTC (Our Final Model)}
+\label{sec:conformer_ctc}
+The final model uses a deeper Conformer encoder (six blocks, $d_\mathrm{model}=256$, $4$ attention heads, FFN expansion $4$, depthwise convolution kernel $31$, dropout $0.1$) on top of the $344$-dim velocity-augmented input.
+
+Each Conformer block follows the Macaron design of \cite{gulati2020conformer}:
+\[
+  \tilde x = x + \tfrac{1}{2}\,\mathrm{FFN}(x);\quad
+  x' = \tilde x + \mathrm{MHSA}(\tilde x);\quad
+  x'' = x' + \mathrm{Conv}(x');\quad
+  y = \mathrm{LayerNorm}\bigl(x'' + \tfrac{1}{2}\,\mathrm{FFN}(x'')\bigr).
+\]
+The convolution module is the standard Conformer point-wise / GLU / depth-wise / BatchNorm / SiLU / point-wise stack. A final linear projection maps the encoder output to $678$-dim log-probabilities. Total parameters: $9{,}400{,}230$ (all trainable).
+
+Training hyperparameters:
+\begin{itemize}
+  \item Optimiser: AdamW, $\mathrm{lr}_{\max}=3\times 10^{-4}$, weight decay $10^{-4}$, betas $(0.9, 0.98)$, $\varepsilon=10^{-9}$.
+  \item Schedule: OneCycleLR over 40 epochs, \texttt{pct\_start=0.2}, cosine annealing to almost zero.
+  \item Batch size: $16$; gradient clipping: $\|g\|_2 \le 1.0$.
+  \item Loss: \texttt{CTCLoss}(blank $=677$, \texttt{zero\_infinity=True}).
+  \item Decoding: greedy CTC collapse followed by blank removal (no language model).
+\end{itemize}
+
+\subsection{Why CTC fits this task}
+CTC defines a marginal likelihood over all monotonic alignments of $\hat y$ to $X$ that are consistent with $y$. Because skeleton pose frames and gloss tokens are produced in the same temporal order, the monotonic-alignment assumption holds. This makes CTC training cheaper and more stable than Seq2Seq (no autoregressive sampling at training time, no exposure bias, no token-level mode collapse).
+
+% =============================================================================
+\section{Experiments and Results}
+% =============================================================================
+
+All experiments were run on Google Colab using a single T4/L4 GPU. Each individual training run completed in well under three hours. We use exclusively the Dev split for hyperparameter selection; the official test split contains no labels and is reserved for our final submission.
+
+\subsection{Headline Comparison}
+\Cref{tab:headline} aggregates the best Dev WER attained by each model.
+
+\begin{table}[H]
+\centering
+\caption{Best Dev Word Error Rate per model.}
+\label{tab:headline}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Model} & \textbf{Loss} & \textbf{Params} & \textbf{Epochs run} & \textbf{Best Dev WER} & \textbf{Best epoch} \\
+\midrule
+BiLSTM + CTC               & CTC          & ---     & 37 (interrupted) & 66.62\% & 34 \\
+Transformer + CTC          & CTC          & ---     & 30               & 36.34\% & 30 \\
+Conformer + Decoder        & Cross-Entropy & ---     & 30               & 8.76\%$^{\dagger}$ & 23 \\
+\textbf{Conformer + CTC}   & CTC          & 9.4 M   & 40               & \bestwer{}        & 39 \\
+\bottomrule
+\end{tabular}
+\\[0.4em]
+\small $^{\dagger}$ Best Dev WER measured during teacher-forced training; free-running decoding collapses (\cref{sec:errors}).
+\end{table}
+
+The Conformer+CTC delivers an 80\% relative reduction in WER versus the BiLSTM baseline and a 64\% relative reduction versus the Transformer baseline.
+
+\subsection{Training Dynamics}
+\Cref{fig:dyn} (left) shows the loss curves of the Conformer+CTC model: training and dev CTC loss decrease together for the first $\sim$20 epochs, after which the dev loss plateaus and the model continues to refine its predictions according to the WER. \Cref{fig:dyn} (right) shows the Dev WER, which decreases monotonically (with small jitter) and reaches its minimum at epoch~39.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.97\linewidth]{figures/02_conformer_ctc_training.pdf}
+\caption{Training dynamics of the final \winmodel{} model. Left: train vs.\ dev CTC loss across 40 epochs. Right: Dev WER trajectory; the red dashed line marks the best-WER checkpoint at epoch 39.}
+\label{fig:dyn}
+\end{figure}
+
+\Cref{fig:allwer} compares the four architectures on a single chart so the relative learning behaviours are directly comparable. The BiLSTM converges slowly and would likely require many more epochs (and possibly a wider hidden state) to close the gap. The Transformer plateaus around 40\% WER --- consistent with our error analysis, which finds that it under-predicts the length of the gloss sequence. Both Conformer-based models improve dramatically after epoch 5.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\linewidth]{figures/03_all_models_dev_wer.pdf}
+\caption{Dev Word Error Rate per epoch for all four architectures. The Conformer with CTC (green diamonds) converges fastest and lowest.}
+\label{fig:allwer}
+\end{figure}
+
+\subsection{Qualitative Examples}
+\Cref{fig:samples} shows the first ten Dev predictions of the final Conformer+CTC model. Exact matches are highlighted in green; deletions are orange; substitutions are red. Of the ten shown, six are exact, three are single-token deletions of short function words (e.g., \emph{istifham}, \emph{huwa}), and one is a single-token substitution (\emph{mu\,callim} $\to$ \emph{ma\,crifa}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{figures/06_sample_predictions.pdf}
+\caption{First ten Dev predictions of the \winmodel{} model. Most errors are single-token deletions or substitutions; no insertions are observed in this slice.}
+\label{fig:samples}
+\end{figure}
+
+\subsection{Test-set Submission}
+The \winmodel{} model is the only model that produces a labelled test-set submission in this project. We re-load the best checkpoint and run greedy CTC decoding over all 3{,}800 held-out test samples, writing the resulting glosses to \texttt{conformer\_test\_predictions.csv}. Sanity checks indicate the predictions have a mean length of $4.37$ tokens (vs.\ $4.53$ on the dev set and $4.80$ on the train set), confirming no length-collapse pathology.
+
+% =============================================================================
+\section{Discussion and Error Analysis}
+\label{sec:errors}
+% =============================================================================
+
+\subsection{Why the BiLSTM Underperforms}
+The BiLSTM Dev WER plateaus near 67\%. Two factors are at play. First, the training run was manually interrupted at epoch 38 because the train loss had reached $0.93$ while the dev loss had stopped improving --- a classic overfitting signal that argues for stronger regularisation. Second, BiLSTMs process each frame's history through a single recurrent bottleneck, which becomes a real constraint when sequences reach $T \approx 327$ frames on the dev set. The attention mechanism in the Transformer- and Conformer-based models gives every frame direct connections to every other frame in $O(1)$ depth, which is materially more efficient.
+
+\subsection{Why the Transformer Under-predicts Length}
+The Transformer+CTC model produces consistently shorter outputs than the reference: the average length difference is $-0.98$ tokens. The top-10 missed words on the Dev set are almost all short pronouns and discourse markers --- \emph{huwa} (``he''), \emph{su\,al} (``question marker''), \emph{ana} (``I''). Because the Transformer encoder lacks an explicit local-temporal inductive bias, it cannot easily commit to producing a particular short token within a particular short-duration spike of motion, and the CTC blank tends to absorb these borderline frames.
+
+\subsection{Why the Seq2Seq Decoder Looks Best on Paper But Fails at Inference}
+The Conformer+Decoder model reaches a Dev WER of 8.76\% during teacher-forced training but the same model produces severely degenerate output under free-running autoregressive decoding (no teacher forcing): the average length difference jumps to $+10.86$ tokens, with the decoder \emph{babbling} ``\emph{ab ab ab ab \dots}'' for many time steps. \Cref{tab:babble} shows representative cases.
+
+\begin{table}[H]
+\centering
+\caption{Example degenerate predictions of the Conformer+Seq2Seq decoder at free-running inference.}
+\label{tab:babble}
+\small
+\begin{tabular}{p{0.34\linewidth} p{0.59\linewidth}}
+\toprule
+\textbf{Reference} & \textbf{Prediction} \\
+\midrule
+sual huwa & ittisal ibn abha ab ab ab ab a\,la abyad ab \\
+huwa mu\,callim lughat ishara & alam usbu\,c\_madhi al-baqi h ab ab ab ab ab thalathuun abyad itqan abha biskut akhdar \\
+huwa sual & ighlaq bas baqra Allah ikhtifa ab ab ab ab ibn iz\,aj abha ikhtibar al-khamis abha \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The root cause is twofold: (i) cross-entropy training with teacher forcing only optimises one-step-ahead prediction --- it does not penalise the long-horizon distributional shift between the teacher's clean targets and the model's own noisy samples (\emph{exposure bias}); and (ii) without a sufficiently informative encoder-decoder cross-attention signal, the decoder collapses onto a small set of frequent tokens and runs to its maximum decode length. We therefore consider the 8.76\% number to be a \emph{training-time} metric only; the model is \textbf{not} a robust deployable system.
+
+\subsection{Error Profile of the Final Conformer+CTC Model}
+Our final Conformer+CTC model exhibits no such collapse. The prediction length distribution closely tracks the reference distribution (mean $4.37$ on test vs.\ $4.80$ on train). \Cref{fig:topmissed} ranks the top-10 most-missed gloss tokens in our analysis; the errors are dominated by:
+\begin{itemize}
+  \item \textbf{Deletions of high-frequency short tokens.} The function words \emph{ana} (``I''), \emph{huwa} (``he''), and the question-marker \emph{su\,al} are the three most commonly missed tokens. These signs are brief and visually similar to neighbouring frames, so the CTC blank wins the marginalisation.
+  \item \textbf{Substitutions of visually similar signs.} For example \emph{mu\,callim} (``teacher'') $\to$ \emph{ma\,crifa} (``knowledge''). Both signs use a single open hand contacting the head; they differ mainly in subtle motion that the pose representation does not always preserve.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/05_top_missed_words.pdf}
+\caption{Top-10 most-missed gloss tokens on the Dev set. The leading errors are deletions of high-frequency short function words.}
+\label{fig:topmissed}
+\end{figure}
+
+\subsection{Comparison Across Models}
+A common pattern emerges: the leading error class for every CTC-based model is the \emph{deletion of short function words}, while the Seq2Seq decoder's errors are entirely \emph{insertions} from collapse. This is consistent with CTC's monotonic-alignment bias (it would rather skip a frame than commit to a low-confidence emission), and with the decoder's autoregressive freedom (which lets it emit any token it likes regardless of the encoder signal).
+
+% =============================================================================
+\section{Conclusions and Limitations}
+% =============================================================================
+
+\subsection{Summary of Contributions}
+\begin{itemize}
+  \item We benchmark four architectures for pose-based continuous Saudi Sign Language recognition on the Isharah 1000 dataset.
+  \item We show that a Conformer encoder trained with CTC loss reaches \bestwer{} Dev Word Error Rate on the Signer-Independent split --- an 80\% relative reduction over a BiLSTM baseline and a 64\% relative reduction over a comparably-trained Transformer baseline.
+  \item We document a non-obvious failure mode of the Conformer+Seq2Seq decoder: although its teacher-forced training reports the lowest WER of all four models, free-running autoregressive decoding collapses into a babbling state, making it unsuitable for deployment.
+  \item We deliver the only test-set submission of the project (3{,}800 predicted gloss sequences) from the Conformer+CTC model.
+  \item Our error analysis isolates the dominant residual error class for all CTC models as the deletion of short, high-frequency function words --- pointing to specific levers (language-model rescoring, lower CTC blank prior) for future improvement.
+\end{itemize}
+
+\subsection{Limitations}
+\begin{enumerate}
+  \item \textbf{No language-model decoding.} Both CTC decoders use a greedy collapse. A word-level Arabic n-gram or transformer language model used during beam search would likely reduce the deletion rate on short function words.
+  \item \textbf{Single-modality input.} We use only the skeleton-pose stream provided by the dataset. Hand-shape information that is lost at MediaPipe-keypoint resolution might recover some of the substitutions of visually similar signs.
+  \item \textbf{Signer-Independent split only.} We did not run the Signer-Dependent split, so we cannot quantify the signer-generalisation gap directly.
+  \item \textbf{No test-set ground truth.} The official test split's gloss labels are not released to us; the test-set submission has been sanity-checked structurally but its true WER cannot be computed locally.
+  \item \textbf{BiLSTM was interrupted.} The recurrent baseline was stopped after 37 epochs and may not represent its asymptotic performance.
+\end{enumerate}
+
+\subsection{Future Work}
+The most promising directions, in our judgement, are: (1) integrating a small Arabic gloss language model into a CTC beam search to address function-word deletions; (2) replacing the velocity feature with a learnable temporal convolution stem to recover finer hand-shape detail; and (3) running a multi-task training that combines CTC and label-smoothed cross-entropy on the Conformer encoder, jointly inheriting CTC's stable monotonic-alignment bias and the decoder's language-model behaviour.
+
+% =============================================================================
+\section*{References}
+\addcontentsline{toc}{section}{References}
+% =============================================================================
+
+\begin{thebibliography}{9}
+
+\bibitem{isharah2024}
+The Isharah Project, ``Isharah 1000: A Continuous Saudi Sign Language Dataset,''
+\emph{technical resource}, 2024.
+
+\bibitem{graves2006ctc}
+A.~Graves, S.~Fern\'{a}ndez, F.~Gomez, and J.~Schmidhuber,
+``Connectionist temporal classification: Labelling unsegmented sequence data with recurrent neural networks,''
+\emph{Proc.\ ICML}, pp.~369--376, 2006.
+
+\bibitem{vaswani2017}
+A.~Vaswani \emph{et al.},
+``Attention is all you need,''
+\emph{Proc.\ NeurIPS}, 2017.
+
+\bibitem{gulati2020conformer}
+A.~Gulati \emph{et al.},
+``Conformer: Convolution-augmented Transformer for speech recognition,''
+\emph{Proc.\ Interspeech}, 2020.
+
+\bibitem{koller2017}
+O.~Koller, S.~Zargaran, and H.~Ney,
+``Re-Sign: Re-aligned end-to-end sequence modelling with deep recurrent CNN-HMMs,''
+\emph{Proc.\ CVPR}, 2017.
+
+\bibitem{camgoz2020}
+N.~C.~Camgoz, O.~Koller, S.~Hadfield, and R.~Bowden,
+``Sign language transformers: Joint end-to-end sign language recognition and translation,''
+\emph{Proc.\ CVPR}, 2020.
+
+\bibitem{mediapipe}
+C.~Lugaresi \emph{et al.},
+``MediaPipe: A framework for building perception pipelines,''
+\emph{arXiv:1906.08172}, 2019.
+
+\bibitem{loshchilov2019adamw}
+I.~Loshchilov and F.~Hutter,
+``Decoupled weight decay regularization,''
+\emph{Proc.\ ICLR}, 2019.
+
+\bibitem{smith2018oncycle}
+L.~N.~Smith and N.~Topin,
+``Super-convergence: Very fast training of neural networks using large learning rates,''
+\emph{arXiv:1708.07120}, 2018.
+
+\end{thebibliography}
+
+\end{document}
